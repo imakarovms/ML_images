@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import csv
 import logging
 import time
 from pathlib import Path
@@ -27,6 +27,17 @@ from candidates import generate_candidate_pairs
 from orb_verify import extract_orb_features, verify_pair_orb
 from dsu import DSU
 from export_groups import export_groups
+
+
+def save_pair_results_csv(rows: list[dict], path: Path) -> None:
+    if not rows:
+        return
+
+    fieldnames = sorted({k for row in rows for k in row.keys()})
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def setup_logging() -> None:
@@ -113,6 +124,52 @@ def verify_pair_task(args: tuple[dict, dict, bool, str | None]) -> dict:
         save_debug=save_debug,
         debug_path=debug_path,
     )
+
+
+def expanded_final_groups(
+    indexed_items: list[dict],
+    dsu: DSU,
+    sha1_groups: dict[str, list[dict]]
+) -> list[list[Path]]:
+    """
+    Собирает финальные группы: объединяет представителей по DSU
+    и добавляет обратно SHA1-дубликаты.
+    """
+    # 1. Группируем представителей по корням DSU
+    root_to_rep_paths: dict[int, list[Path]] = {}
+    for item in indexed_items:
+        root = dsu.find(item["index"])
+        root_to_rep_paths.setdefault(root, []).append(Path(item["path"]))
+
+    # 2. Маппинги для быстрого доступа
+    sha1_to_all_paths = {
+        sha1: [x["path"] for x in group]
+        for sha1, group in sha1_groups.items()
+    }
+    path_to_sha1 = {
+        str(item["path"]): item["sha1"]
+        for item in indexed_items
+    }
+
+    # 3. Расширяем группы
+    final_groups: list[list[Path]] = []
+    for rep_group in root_to_rep_paths.values():
+        expanded: list[Path] = []
+        for rep_path in rep_group:
+            rep_sha1 = path_to_sha1[str(rep_path)]
+            expanded.extend(sha1_to_all_paths[rep_sha1])
+        
+        # Убираем дубликаты с сохранением порядка
+        seen = set()
+        deduped = []
+        for p in expanded:
+            key = str(p)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(Path(p))
+        final_groups.append(deduped)
+    
+    return final_groups
 
 
 def main() -> None:
@@ -225,13 +282,20 @@ def main() -> None:
         path_i = pair["path_i"]
         path_j = pair["path_j"]
 
+        debug_path = None
+        if SAVE_DEBUG_MATCHES:
+            debug_folder.mkdir(parents=True, exist_ok=True)
+            debug_path = str(
+                debug_folder /
+                f"{Path(path_i).stem}__{Path(path_j).stem}.jpg"
+            )
+
         tasks.append((
             orb_cache[path_i],
             orb_cache[path_j],
-            False,
-            None,
+            SAVE_DEBUG_MATCHES,
+            debug_path,
         ))
-
 
     logging.info("Запускаю точную ORB-проверку кандидатных пар")
     verified_results: list[dict] = []
@@ -305,7 +369,7 @@ def main() -> None:
 
         final_groups.append(deduped_group)
 
-    final_groups = sorted(final_groups, key=lambda g: (-len(g), [str(p) for p in g]))
+    final_groups = expanded_final_groups(indexed_items, dsu, sha1_groups)
 
     # -------------------- 9. Экспорт --------------------
     export_groups(final_groups, output_folder)
@@ -316,6 +380,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    print("Begin")
     main()
-    print("End")

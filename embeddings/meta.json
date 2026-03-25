@@ -1,0 +1,6 @@
+{
+  "count": 600,
+  "embed_dim": 128,
+  "device": "cpu",
+  "model_path": "models/best_embedding.pt"
+}
