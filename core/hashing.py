@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config import (
+from core.config import (
     PHASH_SIZE,
     PHASH_HASH_SIZE,
     DHASH_HASH_SIZE,

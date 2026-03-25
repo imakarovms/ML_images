@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from config import BACKGROUND_THRESHOLD
+from core.config import BACKGROUND_THRESHOLD
 
 
 def create_foreground_mask(
