@@ -77,6 +77,11 @@ def extract_orb_features(path: str | Path) -> dict:
 def verify_pair_orb(
     feat1: dict,
     feat2: dict,
+    min_keypoints: int = MIN_KEYPOINTS,
+    min_good_matches: int = MIN_GOOD_MATCHES,
+    min_inliers: int = MIN_INLIERS,
+    min_inlier_ratio: float = 0.0,
+    ransac_reproj_threshold: float = RANSAC_REPROJ_THRESHOLD,
     save_debug: bool = False,
     debug_path: str | Path | None = None,
 ) -> dict:
@@ -94,6 +99,7 @@ def verify_pair_orb(
         "kp2": feat2["kp_count"],
         "good_matches": 0,
         "inliers": 0,
+        "inlier_ratio": 0.0,
         "angle": None,
         "homography": None,
     }
@@ -102,7 +108,7 @@ def verify_pair_orb(
         result["reason"] = "Нет дескрипторов"
         return result
 
-    if feat1["kp_count"] < MIN_KEYPOINTS or feat2["kp_count"] < MIN_KEYPOINTS:
+    if feat1["kp_count"] < min_keypoints or feat2["kp_count"] < min_keypoints:
         result["reason"] = "Слишком мало ключевых точек"
         return result
 
@@ -125,7 +131,7 @@ def verify_pair_orb(
 
     result["good_matches"] = len(good_matches)
 
-    if len(good_matches) < MIN_GOOD_MATCHES:
+    if len(good_matches) < min_good_matches:
         result["reason"] = "Слишком мало хороших совпадений"
         return result
 
@@ -136,7 +142,7 @@ def verify_pair_orb(
         src_points,
         dst_points,
         cv2.RANSAC,
-        RANSAC_REPROJ_THRESHOLD,
+        ransac_reproj_threshold,
     )
 
     if H is None or inlier_mask is None:
@@ -146,10 +152,17 @@ def verify_pair_orb(
     inliers = int(inlier_mask.ravel().sum())
     angle = float(np.degrees(np.arctan2(H[1, 0], H[0, 0])))
 
+    inlier_ratio = inliers / len(good_matches) if good_matches else 0.0
     result["inliers"] = inliers
+    result["inlier_ratio"] = inlier_ratio
     result["angle"] = angle
     result["homography"] = H
-    result["same"] = inliers >= MIN_INLIERS
-    result["reason"] = "OK" if result["same"] else "Недостаточно inliers"
+    result["same"] = inliers >= min_inliers and inlier_ratio >= min_inlier_ratio
+    if inliers < min_inliers:
+        result["reason"] = "Недостаточно inliers"
+    elif inlier_ratio < min_inlier_ratio:
+        result["reason"] = "Низкий inlier ratio"
+    else:
+        result["reason"] = "OK"
 
     return result
