@@ -7,8 +7,12 @@ import shutil
 from itertools import combinations
 from pathlib import Path
 
+from hashing import phash, dhash
+from config import SUPPORTED_EXTENSIONS
+
 
 GROUPS_FOLDER = Path("grouped_images")
+IMAGES_FOLDER = Path("images")
 PAIR_RESULTS_CSV = Path("pair_results.csv")
 OUTPUT_FOLDER = Path("review_dataset")
 
@@ -22,6 +26,19 @@ NEGATIVE_PER_POSITIVE = 1
 
 # сколько hard negative-пар брать максимум
 MAX_HARD_NEGATIVES = 3000
+
+# Если групп слишком мало, считаем, что группировка недостоверна и строим пары
+# напрямую из images по pHash/dHash.
+MIN_GROUPS_FOR_GROUP_MODE = 20
+
+# Параметры fallback-режима "из images"
+IMAGE_MODE_MAX_SIMILAR_PAIRS = 2000
+IMAGE_MODE_MAX_NEGATIVE_PAIRS = 2000
+IMAGE_MODE_MIN_NEGATIVE_PAIRS = 300
+IMAGE_MODE_SIMILAR_PHASH_MAX = 10
+IMAGE_MODE_SIMILAR_DHASH_MAX = 10
+IMAGE_MODE_NEGATIVE_PHASH_MIN = 20
+IMAGE_MODE_NEGATIVE_DHASH_MIN = 20
 
 
 def ensure_dir(path: Path) -> Path:
@@ -46,6 +63,87 @@ def load_groups(groups_folder: Path) -> list[list[Path]]:
         if files:
             groups.append(files)
     return groups
+
+
+def find_images(folder: Path) -> list[Path]:
+    return sorted(
+        [
+            p for p in folder.rglob("*")
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+    )
+
+
+def build_pairs_from_images(images: list[Path]) -> tuple[list[dict], list[dict]]:
+    if len(images) < 2:
+        return [], []
+
+    hashes: dict[str, tuple[int, int]] = {}
+    for idx, path in enumerate(images, start=1):
+        try:
+            hashes[str(path)] = (phash(path), dhash(path))
+        except Exception:
+            continue
+
+        if idx % 200 == 0 or idx == len(images):
+            print(f"[HASH] {idx}/{len(images)}")
+
+    valid_paths = [Path(p) for p in hashes.keys()]
+    if len(valid_paths) < 2:
+        return [], []
+
+    similar_rows: list[dict] = []
+    negative_pool: list[dict] = []
+
+    for i, j in combinations(range(len(valid_paths)), 2):
+        p1 = valid_paths[i]
+        p2 = valid_paths[j]
+
+        ph1, dh1 = hashes[str(p1)]
+        ph2, dh2 = hashes[str(p2)]
+        p_dist = (ph1 ^ ph2).bit_count()
+        d_dist = (dh1 ^ dh2).bit_count()
+
+        if p_dist <= IMAGE_MODE_SIMILAR_PHASH_MAX and d_dist <= IMAGE_MODE_SIMILAR_DHASH_MAX:
+            similar_rows.append({
+                "pair_type": "positive_candidate",
+                "group_a": "",
+                "group_b": "",
+                "path1": str(p1),
+                "path2": str(p2),
+                "source": "images_hash_near",
+                "phash_distance": p_dist,
+                "dhash_distance": d_dist,
+            })
+            continue
+
+        if p_dist >= IMAGE_MODE_NEGATIVE_PHASH_MIN and d_dist >= IMAGE_MODE_NEGATIVE_DHASH_MIN:
+            negative_pool.append({
+                "pair_type": "negative_candidate",
+                "group_a": "",
+                "group_b": "",
+                "path1": str(p1),
+                "path2": str(p2),
+                "source": "images_hash_far",
+                "phash_distance": p_dist,
+                "dhash_distance": d_dist,
+            })
+
+    if len(similar_rows) > IMAGE_MODE_MAX_SIMILAR_PAIRS:
+        similar_rows = random.sample(similar_rows, IMAGE_MODE_MAX_SIMILAR_PAIRS)
+
+    target_negatives = min(
+        max(len(similar_rows) * NEGATIVE_PER_POSITIVE, IMAGE_MODE_MIN_NEGATIVE_PAIRS),
+        IMAGE_MODE_MAX_NEGATIVE_PAIRS,
+    )
+    if not negative_pool:
+        negative_rows = []
+    elif len(negative_pool) > target_negatives:
+        negative_rows = random.sample(negative_pool, target_negatives)
+    else:
+        negative_rows = negative_pool
+
+    return similar_rows, negative_rows
 
 
 def sample_pairs_from_group(files: list[Path], max_pairs: int) -> list[tuple[Path, Path]]:
@@ -198,9 +296,6 @@ def save_manifest(rows: list[dict], path: Path) -> None:
 def main():
     random.seed(RANDOM_SEED)
 
-    if not GROUPS_FOLDER.exists():
-        raise FileNotFoundError(f"Не найдена папка групп: {GROUPS_FOLDER}")
-
     clear_dir(OUTPUT_FOLDER)
 
     pairs_dir = ensure_dir(OUTPUT_FOLDER / "pairs")
@@ -208,13 +303,27 @@ def main():
     ensure_dir(OUTPUT_FOLDER / "sorted" / "negative")
     ensure_dir(OUTPUT_FOLDER / "sorted" / "skip")
 
-    groups = load_groups(GROUPS_FOLDER)
+    groups = load_groups(GROUPS_FOLDER) if GROUPS_FOLDER.exists() else []
+    use_group_mode = len(groups) >= MIN_GROUPS_FOR_GROUP_MODE
 
-    positive_rows = build_positive_pairs(groups)
-    negative_rows = build_negative_pairs(
-        groups,
-        target_count=len(positive_rows) * NEGATIVE_PER_POSITIVE,
-    )
+    if use_group_mode:
+        print(f"[MODE] grouped_images mode: groups={len(groups)}")
+        positive_rows = build_positive_pairs(groups)
+        negative_rows = build_negative_pairs(
+            groups,
+            target_count=len(positive_rows) * NEGATIVE_PER_POSITIVE,
+        )
+    else:
+        print(
+            f"[MODE] images fallback mode: groups={len(groups)} < "
+            f"{MIN_GROUPS_FOR_GROUP_MODE}"
+        )
+        if not IMAGES_FOLDER.exists():
+            raise FileNotFoundError(f"Не найдена папка изображений: {IMAGES_FOLDER}")
+        images = find_images(IMAGES_FOLDER)
+        print(f"[MODE] images found: {len(images)}")
+        positive_rows, negative_rows = build_pairs_from_images(images)
+
     hard_negative_rows = load_hard_negatives(PAIR_RESULTS_CSV)
 
     all_rows = positive_rows + negative_rows + hard_negative_rows
@@ -227,10 +336,18 @@ def main():
 
     save_manifest(manifest_rows, OUTPUT_FOLDER / "manifest.csv")
 
+    positive_types = {"positive", "positive_candidate"}
+    negative_types = {"negative", "negative_candidate"}
+    positive_like_count = sum(1 for r in manifest_rows if r["pair_type"] in positive_types)
+    negative_like_count = sum(1 for r in manifest_rows if r["pair_type"] in negative_types)
     stats = {
         "total_pairs": len(manifest_rows),
-        "positive": sum(1 for r in manifest_rows if r["pair_type"] == "positive"),
-        "negative": sum(1 for r in manifest_rows if r["pair_type"] == "negative"),
+        # backward-compatible keys
+        "positive": positive_like_count,
+        "negative": negative_like_count,
+        # explicit keys for mixed sources
+        "positive_like": positive_like_count,
+        "negative_like": negative_like_count,
         "hard_negative": sum(1 for r in manifest_rows if r["pair_type"] == "hard_negative"),
     }
 
