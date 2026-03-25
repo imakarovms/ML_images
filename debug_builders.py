@@ -34,6 +34,7 @@ MIN_GROUPS_FOR_GROUP_MODE = 20
 # Параметры fallback-режима "из images"
 IMAGE_MODE_MAX_SIMILAR_PAIRS = 2000
 IMAGE_MODE_MAX_NEGATIVE_PAIRS = 2000
+IMAGE_MODE_MIN_NEGATIVE_PAIRS = 300
 IMAGE_MODE_SIMILAR_PHASH_MAX = 10
 IMAGE_MODE_SIMILAR_DHASH_MAX = 10
 IMAGE_MODE_NEGATIVE_PHASH_MIN = 20
@@ -132,10 +133,12 @@ def build_pairs_from_images(images: list[Path]) -> tuple[list[dict], list[dict]]
         similar_rows = random.sample(similar_rows, IMAGE_MODE_MAX_SIMILAR_PAIRS)
 
     target_negatives = min(
-        len(similar_rows) * NEGATIVE_PER_POSITIVE,
+        max(len(similar_rows) * NEGATIVE_PER_POSITIVE, IMAGE_MODE_MIN_NEGATIVE_PAIRS),
         IMAGE_MODE_MAX_NEGATIVE_PAIRS,
     )
-    if len(negative_pool) > target_negatives > 0:
+    if not negative_pool:
+        negative_rows = []
+    elif len(negative_pool) > target_negatives:
         negative_rows = random.sample(negative_pool, target_negatives)
     else:
         negative_rows = negative_pool
@@ -335,10 +338,16 @@ def main():
 
     positive_types = {"positive", "positive_candidate"}
     negative_types = {"negative", "negative_candidate"}
+    positive_like_count = sum(1 for r in manifest_rows if r["pair_type"] in positive_types)
+    negative_like_count = sum(1 for r in manifest_rows if r["pair_type"] in negative_types)
     stats = {
         "total_pairs": len(manifest_rows),
-        "positive_like": sum(1 for r in manifest_rows if r["pair_type"] in positive_types),
-        "negative_like": sum(1 for r in manifest_rows if r["pair_type"] in negative_types),
+        # backward-compatible keys
+        "positive": positive_like_count,
+        "negative": negative_like_count,
+        # explicit keys for mixed sources
+        "positive_like": positive_like_count,
+        "negative_like": negative_like_count,
         "hard_negative": sum(1 for r in manifest_rows if r["pair_type"] == "hard_negative"),
     }
 
