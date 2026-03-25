@@ -10,6 +10,8 @@ import cv2
 
 from config import (
     INPUT_FOLDER,
+    NN_OUTPUT_FOLDER,
+    NN_EMBEDDING_CANDIDATES_CSV,
     LOG_LEVEL,
     LOG_EVERY_N,
     MAX_WORKERS,
@@ -29,10 +31,6 @@ from hashing import sha1_file
 from orb_verify import extract_orb_features, verify_pair_orb
 from dsu import DSU
 from export_groups import export_groups
-
-
-OUTPUT_FOLDER = Path("grouped_images_nn")
-EMBEDDING_CANDIDATES_CSV = Path("embedding_candidates.csv")
 
 
 def setup_logging() -> None:
@@ -87,12 +85,21 @@ def filter_candidates_to_unique(
     candidates: list[dict],
     rep_set: set[str],
 ) -> list[dict]:
+    def normalize_path(raw_path: str) -> str:
+        p = Path(raw_path)
+        if p.is_absolute():
+            try:
+                return str(p.resolve().relative_to(Path.cwd().resolve()))
+            except ValueError:
+                return str(p.resolve())
+        return str(p)
+
     out = []
     seen = set()
 
     for row in candidates:
-        p1 = str(Path(row["path1"]))
-        p2 = str(Path(row["path2"]))
+        p1 = normalize_path(row["path1"])
+        p2 = normalize_path(row["path2"])
 
         if p1 not in rep_set or p2 not in rep_set:
             continue
@@ -240,7 +247,8 @@ def main() -> None:
     t0 = time.time()
 
     input_folder = Path(INPUT_FOLDER)
-    output_folder = Path(OUTPUT_FOLDER)
+    output_folder = Path(NN_OUTPUT_FOLDER)
+    candidates_path = Path(NN_EMBEDDING_CANDIDATES_CSV)
 
     if not input_folder.exists():
         logging.error(f"Папка не существует: {input_folder.resolve()}")
@@ -251,6 +259,10 @@ def main() -> None:
 
     if not image_paths:
         logging.error("Изображения не найдены")
+        return
+
+    if not candidates_path.exists():
+        logging.error(f"Не найден файл кандидатных пар: {candidates_path.resolve()}")
         return
 
     logging.info("Считаю SHA1")
@@ -273,10 +285,13 @@ def main() -> None:
     path_to_index = {str(item["path"]): item["index"] for item in indexed_items}
 
     logging.info("Читаю нейросеточные candidate pairs")
-    nn_candidates = load_embedding_candidates(EMBEDDING_CANDIDATES_CSV)
+    nn_candidates = load_embedding_candidates(candidates_path)
 
     rep_set = {str(p) for p in unique_paths}
-    nn_candidates = filter_candidates_to_unique(nn_candidates, rep_set)
+    nn_candidates = filter_candidates_to_unique(
+        nn_candidates,
+        rep_set,
+    )
 
     logging.info(f"Кандидатов после фильтра по unique representatives: {len(nn_candidates)}")
 

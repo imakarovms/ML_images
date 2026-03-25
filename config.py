@@ -4,6 +4,8 @@ import os
 INPUT_FOLDER = Path("images")
 OUTPUT_FOLDER = Path("grouped_images")
 DEBUG_FOLDER = Path("debug")
+NN_OUTPUT_FOLDER = Path("grouped_images_nn")
+NN_EMBEDDING_CANDIDATES_CSV = Path("embedding_candidates.csv")
 
 CPU_COUNT = os.cpu_count() or 1
 MAX_WORKERS = max(1, CPU_COUNT - 1)
