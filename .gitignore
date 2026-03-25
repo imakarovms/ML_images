@@ -142,3 +142,5 @@ target/
 
 # mypy
 .mypy_cache/
+
+pair_results_nn_pass*.csv
